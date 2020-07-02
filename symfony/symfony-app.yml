@@ -1,0 +1,166 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: nginx-config
+data:
+  nginx.conf: |
+    events {
+    }
+    http {
+      server {
+        listen         80 default_server;
+        listen         [::]:80 default_server;
+        root /var/www/project/public;
+        location / {
+            # try to serve file directly, fallback to index.php
+            try_files $uri /index.php$is_args$args;
+        }
+
+        location ~ ^/index\.php(/|$) {
+            fastcgi_pass 127.0.0.1:9000;
+            fastcgi_split_path_info ^(.+\.php)(/.*)$;
+            include fastcgi_params;
+            fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+            fastcgi_param DOCUMENT_ROOT $realpath_root;
+        }
+
+        # return 404 for all other php files not matching the front controller
+        # this prevents access to other php files you don't want to be accessible.
+        location ~ \.php$ {
+            return 404;
+        }
+      }
+    }
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: env-config
+data:
+  .env: |
+    APP_ENV=prod
+    APP_DEBUG=0
+    APP_SECRET=N5FK6grrCnxuvZcXkG0hjgNI401FpAo
+    DATABASE_URL="mysql://root:password@mysql:3306/symfony"
+
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: symfony
+spec:
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: symfony-app
+    spec:
+      volumes:
+        - name: shared-files
+          emptyDir: {}
+        - name: nginx-config-volume
+          configMap:
+            name: nginx-config
+        - name: env-config-volume
+          configMap:
+            name: env-config
+
+      containers:
+        - image: gcr.io/cofigroup-217120/sf_test:v5.2
+          name: app
+          #TO DO: Add a liveness probe (GET / on 9000 is crashing)
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/project
+            - name: env-config-volume
+              mountPath: /var/www/project/.env
+              subPath: .env
+          lifecycle:
+            postStart:
+              exec:
+                command: ['/bin/sh', '-c', 'cp -r . /var/www/project && chmod 333 -R /var/www/project/var']
+        - image: nginx:1.7.9
+          name: nginx
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/project
+            - name: nginx-config-volume
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: php
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+  selector:
+    app: symfony-app
+  type: NodePort
+---
+kind: Ingress
+apiVersion: extensions/v1beta1
+metadata:
+  name: php
+spec:
+  rules:
+    - host: cofigroup-staging.cloud.bam.tech
+      http:
+        paths:
+          - backend:
+              serviceName: php
+              servicePort: 80
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - image: mysql:5.6
+          name: mysql
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql
+                  key: password
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: mysql-persistent-storage
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: mysql-persistent-storage
+          gcePersistentDisk:
+            pdName: mysqldb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3306
+  selector:
+    app: mysql

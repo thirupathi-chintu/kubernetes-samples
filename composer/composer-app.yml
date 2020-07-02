@@ -1,0 +1,94 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: nginx-config
+data:
+  nginx.conf: |
+    events {
+    }
+    http {
+      server {
+        listen         80 default_server;
+        listen         [::]:80 default_server;
+        server_name    cofigroup-staging.cloud.bam.tech;
+        root           /var/www/html;
+        index          index.html;
+
+        location ~* \.php$ {
+          fastcgi_pass 127.0.0.1:9000;
+          include         fastcgi_params;
+          fastcgi_param   SCRIPT_FILENAME    $document_root$fastcgi_script_name;
+          fastcgi_param   SCRIPT_NAME        $fastcgi_script_name;
+        }
+      }
+    }
+
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: composer
+spec:
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: composer-app
+    spec:
+      volumes:
+        - name: shared-files
+          emptyDir: {}
+        - name: nginx-config-volume
+          configMap:
+            name: nginx-config
+
+      containers:
+        - image: gcr.io/cofigroup-217120/composer_test:v4.1
+          name: app
+          livenessProbe:
+            httpGet:
+              path: /hello.php
+              port: 80
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+          lifecycle:
+            postStart:
+              exec:
+                command: ['/bin/sh', '-c', 'cp -r /app/. /var/www/html/']
+        - image: nginx:1.7.9
+          name: nginx
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+            - name: nginx-config-volume
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: php
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+  selector:
+    app: composer-app
+  type: NodePort
+---
+kind: Ingress
+apiVersion: extensions/v1beta1
+metadata:
+  name: php
+spec:
+  rules:
+    - host: cofigroup-staging.cloud.bam.tech
+      http:
+        paths:
+          - backend:
+              serviceName: php
+              servicePort: 80

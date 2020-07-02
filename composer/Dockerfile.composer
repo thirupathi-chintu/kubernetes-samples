@@ -1,0 +1,11 @@
+FROM composer:1.7 as builder
+
+COPY composer.json .
+RUN composer install
+
+FROM php:7.2.10-fpm-alpine
+RUN mkdir /app
+RUN mkdir /app/vendor
+COPY --from=builder app/vendor /app/vendor
+COPY hello.php /app
+COPY index.html /app
